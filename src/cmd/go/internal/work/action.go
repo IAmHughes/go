@@ -242,18 +242,24 @@ func (b *Builder) Init() {
 		}
 		if !cfg.BuildWork {
 			workdir := b.WorkDir
-			base.AtExit(func() { os.RemoveAll(workdir) })
+			base.AtExit(func() {
+				if err := os.RemoveAll(workdir); err != nil {
+					fmt.Fprintf(os.Stderr, "go: failed to remove work dir: %s\n", err)
+				}
+			})
 		}
 	}
 
 	if _, ok := cfg.OSArchSupportsCgo[cfg.Goos+"/"+cfg.Goarch]; !ok && cfg.BuildContext.Compiler == "gc" {
 		fmt.Fprintf(os.Stderr, "cmd/go: unsupported GOOS/GOARCH pair %s/%s\n", cfg.Goos, cfg.Goarch)
-		os.Exit(2)
+		base.SetExitStatus(2)
+		base.Exit()
 	}
 	for _, tag := range cfg.BuildContext.BuildTags {
 		if strings.Contains(tag, ",") {
 			fmt.Fprintf(os.Stderr, "cmd/go: -tags space-separated list contains comma\n")
-			os.Exit(2)
+			base.SetExitStatus(2)
+			base.Exit()
 		}
 	}
 }
@@ -287,7 +293,7 @@ func readpkglist(shlibpath string) (pkgs []*load.Package) {
 			if strings.HasPrefix(t, "pkgpath ") {
 				t = strings.TrimPrefix(t, "pkgpath ")
 				t = strings.TrimSuffix(t, ";")
-				pkgs = append(pkgs, load.LoadPackage(t, &stk))
+				pkgs = append(pkgs, load.LoadImportWithFlags(t, base.Cwd, nil, &stk, nil, 0))
 			}
 		}
 	} else {
@@ -298,7 +304,7 @@ func readpkglist(shlibpath string) (pkgs []*load.Package) {
 		scanner := bufio.NewScanner(bytes.NewBuffer(pkglistbytes))
 		for scanner.Scan() {
 			t := scanner.Text()
-			pkgs = append(pkgs, load.LoadPackage(t, &stk))
+			pkgs = append(pkgs, load.LoadImportWithFlags(t, base.Cwd, nil, &stk, nil, 0))
 		}
 	}
 	return
@@ -403,7 +409,7 @@ func (b *Builder) vetAction(mode, depMode BuildMode, p *load.Package) *Action {
 		// vet expects to be able to import "fmt".
 		var stk load.ImportStack
 		stk.Push("vet")
-		p1 := load.LoadPackage("fmt", &stk)
+		p1 := load.LoadImportWithFlags("fmt", p.Dir, p, &stk, nil, 0)
 		stk.Pop()
 		aFmt := b.CompileAction(ModeBuild, depMode, p1)
 
@@ -703,7 +709,7 @@ func (b *Builder) linkSharedAction(mode, depMode BuildMode, shlib string, a1 *Ac
 					}
 				}
 				var stk load.ImportStack
-				p := load.LoadPackage(pkg, &stk)
+				p := load.LoadImportWithFlags(pkg, base.Cwd, nil, &stk, nil, 0)
 				if p.Error != nil {
 					base.Fatalf("load %s: %v", pkg, p.Error)
 				}

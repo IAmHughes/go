@@ -398,10 +398,14 @@ func convFuncName(from, to *types.Type) (fnname string, needsaddr bool) {
 			return "convT32", false
 		case from.Size() == 8 && from.Align == types.Types[TUINT64].Align && !types.Haspointers(from):
 			return "convT64", false
-		case from.IsString():
-			return "convTstring", false
-		case from.IsSlice():
-			return "convTslice", false
+		}
+		if sc := from.SoleComponent(); sc != nil {
+			switch {
+			case sc.IsString():
+				return "convTstring", false
+			case sc.IsSlice():
+				return "convTslice", false
+			}
 		}
 
 		switch tkind {
@@ -477,7 +481,7 @@ opswitch:
 		Dump("walk", n)
 		Fatalf("walkexpr: switch 1 unknown op %+S", n)
 
-	case ONONAME, OINDREGSP, OEMPTY, OGETG:
+	case ONONAME, OEMPTY, OGETG, ONEWOBJ:
 
 	case OTYPE, ONAME, OLITERAL:
 		// TODO(mdempsky): Just return n; see discussion on CL 38655.
@@ -493,7 +497,7 @@ opswitch:
 		n.Left = walkexpr(n.Left, init)
 		n.Right = walkexpr(n.Right, init)
 
-	case ODOT:
+	case ODOT, ODOTPTR:
 		usefield(n)
 		n.Left = walkexpr(n.Left, init)
 
@@ -507,17 +511,6 @@ opswitch:
 		if !n.Type.IsInterface() && !n.Left.Type.IsEmptyInterface() {
 			n.List.Set1(itabname(n.Type, n.Left.Type))
 		}
-
-	case ODOTPTR:
-		usefield(n)
-		if n.Op == ODOTPTR && n.Left.Type.Elem().Width == 0 {
-			// No actual copy will be generated, so emit an explicit nil check.
-			n.Left = cheapexpr(n.Left, init)
-
-			checknil(n.Left, init)
-		}
-
-		n.Left = walkexpr(n.Left, init)
 
 	case OLEN, OCAP:
 		if isRuneCount(n) {
@@ -1681,7 +1674,12 @@ func ascompatet(nl Nodes, nr *types.Type) []*Node {
 			l = tmp
 		}
 
-		a := nod(OAS, l, nodarg(r))
+		res := nod(ORESULT, nil, nil)
+		res.Xoffset = Ctxt.FixedFrameSize() + r.Offset
+		res.Type = r.Type
+		res.SetTypecheck(1)
+
+		a := nod(OAS, l, res)
 		a = convas(a, &nn)
 		updateHasCall(a)
 		if a.HasCall() {
@@ -1692,32 +1690,6 @@ func ascompatet(nl Nodes, nr *types.Type) []*Node {
 		nn.Append(a)
 	}
 	return append(nn.Slice(), mm.Slice()...)
-}
-
-// nodarg returns a Node for the function argument f.
-// f is a *types.Field within a struct *types.Type.
-//
-// The node is for use by a caller invoking the given
-// function, preparing the arguments before the call
-// or retrieving the results after the call.
-// In this case, the node will correspond to an outgoing argument
-// slot like 8(SP).
-func nodarg(f *types.Field) *Node {
-	// Build fake name for individual variable.
-	n := newname(lookup("__"))
-	n.Type = f.Type
-	if f.Offset == BADWIDTH {
-		Fatalf("nodarg: offset not computed for %v", f)
-	}
-	n.Xoffset = f.Offset
-	n.Orig = asNode(f.Nname)
-
-	// preparing arguments for call
-	n.Op = OINDREGSP
-	n.Xoffset += Ctxt.FixedFrameSize()
-	n.SetTypecheck(1)
-	n.SetAddrtaken(true) // keep optimizers at bay
-	return n
 }
 
 // package all the arguments that match a ... T parameter into a []T.
@@ -1951,11 +1923,11 @@ func callnew(t *types.Type) *Node {
 		yyerror("%v is go:notinheap; heap allocation disallowed", t)
 	}
 	dowidth(t)
-	fn := syslook("newobject")
-	fn = substArgTypes(fn, t)
-	v := mkcall1(fn, types.NewPtr(t), nil, typename(t))
-	v.SetNonNil(true)
-	return v
+	n := nod(ONEWOBJ, typename(t), nil)
+	n.Type = types.NewPtr(t)
+	n.SetTypecheck(1)
+	n.SetNonNil(true)
+	return n
 }
 
 // isReflectHeaderDataField reports whether l is an expression p.Data
@@ -3113,11 +3085,9 @@ func walkcompare(n *Node, init *Nodes) *Node {
 	if l != nil {
 		// Handle both == and !=.
 		eq := n.Op
-		var andor Op
+		andor := OOROR
 		if eq == OEQ {
 			andor = OANDAND
-		} else {
-			andor = OOROR
 		}
 		// Check for types equal.
 		// For empty interface, this is:
@@ -3353,12 +3323,6 @@ func walkcompareInterface(n *Node, init *Nodes) *Node {
 }
 
 func walkcompareString(n *Node, init *Nodes) *Node {
-	// s + "badgerbadgerbadger" == "badgerbadgerbadger"
-	if (n.Op == OEQ || n.Op == ONE) && Isconst(n.Right, CTSTR) && n.Left.Op == OADDSTR && n.Left.List.Len() == 2 && Isconst(n.Left.List.Second(), CTSTR) && strlit(n.Right) == strlit(n.Left.List.Second()) {
-		r := nod(n.Op, nod(OLEN, n.Left.List.First(), nil), nodintconst(0))
-		return finishcompare(n, r, init)
-	}
-
 	// Rewrite comparisons to short constant strings as length+byte-wise comparisons.
 	var cs, ncs *Node // const string, non-const string
 	switch {

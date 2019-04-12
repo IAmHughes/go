@@ -104,12 +104,11 @@ func addpctab(ctxt *Link, ftab *sym.Symbol, off int32, d *sym.Pcdata) int32 {
 	return int32(ftab.SetUint32(ctxt.Arch, int64(off), uint32(start)))
 }
 
-func ftabaddstring(ctxt *Link, ftab *sym.Symbol, s string) int32 {
-	n := int32(len(s)) + 1
-	start := int32(len(ftab.P))
-	ftab.Grow(int64(start) + int64(n) + 1)
+func ftabaddstring(ftab *sym.Symbol, s string) int32 {
+	start := len(ftab.P)
+	ftab.Grow(int64(start + len(s) + 1)) // make room for s plus trailing NUL
 	copy(ftab.P[start:], s)
-	return start
+	return int32(start)
 }
 
 // numberfile assigns a file number to the file if it hasn't been assigned already.
@@ -164,7 +163,7 @@ func renumberfiles(ctxt *Link, files []*sym.Symbol, d *sym.Pcdata) {
 // onlycsymbol reports whether this is a symbol that is referenced by C code.
 func onlycsymbol(s *sym.Symbol) bool {
 	switch s.Name {
-	case "_cgo_topofstack", "_cgo_panic", "crosscall2":
+	case "_cgo_topofstack", "__cgo_topofstack", "_cgo_panic", "crosscall2":
 		return true
 	}
 	if strings.HasPrefix(s.Name, "_cgoexp_") {
@@ -182,10 +181,7 @@ func emitPcln(ctxt *Link, s *sym.Symbol) bool {
 	}
 	// We want to generate func table entries only for the "lowest level" symbols,
 	// not containers of subsymbols.
-	if s.Attr.Container() {
-		return true
-	}
-	return true
+	return !s.Attr.Container()
 }
 
 // pclntab initializes the pclntab symbol with
@@ -239,7 +235,7 @@ func (ctxt *Link) pclntab() {
 	nameToOffset := func(name string) int32 {
 		nameoff, ok := funcnameoff[name]
 		if !ok {
-			nameoff = ftabaddstring(ctxt, ftab, name)
+			nameoff = ftabaddstring(ftab, name)
 			funcnameoff[name] = nameoff
 		}
 		return nameoff
@@ -449,7 +445,7 @@ func (ctxt *Link) pclntab() {
 	ftab.SetUint32(ctxt.Arch, int64(start), uint32(len(ctxt.Filesyms)+1))
 	for i := len(ctxt.Filesyms) - 1; i >= 0; i-- {
 		s := ctxt.Filesyms[i]
-		ftab.SetUint32(ctxt.Arch, int64(start)+s.Value*4, uint32(ftabaddstring(ctxt, ftab, s.Name)))
+		ftab.SetUint32(ctxt.Arch, int64(start)+s.Value*4, uint32(ftabaddstring(ftab, s.Name)))
 	}
 
 	ftab.Size = int64(len(ftab.P))

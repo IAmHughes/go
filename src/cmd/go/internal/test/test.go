@@ -514,10 +514,16 @@ var testVetFlags = []string{
 	// "-unusedresult",
 }
 
+func testCmdUsage() {
+	fmt.Fprintf(os.Stderr, "usage: %s\n", CmdTest.UsageLine)
+	fmt.Fprintf(os.Stderr, "Run 'go help %s' and 'go help %s' for details.\n", CmdTest.LongName(), HelpTestflag.LongName())
+	os.Exit(2)
+}
+
 func runTest(cmd *base.Command, args []string) {
 	modload.LoadTests = true
 
-	pkgArgs, testArgs = testFlags(cmd.Usage, args)
+	pkgArgs, testArgs = testFlags(testCmdUsage, args)
 
 	work.FindExecCmd() // initialize cached result
 
@@ -754,7 +760,7 @@ func ensureImport(p *load.Package, pkg string) {
 		}
 	}
 
-	p1 := load.LoadPackage(pkg, &load.ImportStack{})
+	p1 := load.LoadImportWithFlags(pkg, p.Dir, p, &load.ImportStack{}, nil, 0)
 	if p1.Error != nil {
 		base.Fatalf("load %s: %v", pkg, p1.Error)
 	}
@@ -805,7 +811,7 @@ func builderTest(b *work.Builder, p *load.Package) (buildAction, runAction, prin
 	if p.ImportPath == "command-line-arguments" {
 		elem = p.Name
 	} else {
-		_, elem = path.Split(p.ImportPath)
+		elem = load.DefaultExecName(p.ImportPath)
 	}
 	testBinary := elem + ".test"
 
